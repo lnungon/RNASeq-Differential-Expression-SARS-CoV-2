@@ -20,7 +20,7 @@ The following visualizations demonstrate the robust biological signal captured f
 1. **Sample Clustering via Principal Component Analysis (PCA)**
 We performed unsupervised clustering using TMM-normalized log2 counts. To ensure that genes with different expression levels contributed equally to the variation, the data was centered and scaled ($scale. = TRUE$) before computing the principal components.
 
-![PCA Plot](plots/1.PCA plot-1.png)
+![PCA Plot](plots/PCA_plot.png)
 
 >The PCA plot shows a clear separation along PC1 ($14.6%$ of variance) between bacterial pneumonia patients (red) and healthy controls (blue). However, COVID-19 patients (green) exhibit significant transcriptional overlap with the control group. This suggests that while bacterial pneumonia triggers a highly distinct systemic host response, the COVID-19 signature appears more heterogeneous or subtle, highlighting the varying nature and intensities of the host response across different respiratory pathogens.
 
