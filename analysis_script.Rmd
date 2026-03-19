@@ -1,0 +1,696 @@
+---
+title: "RNASeq-Differential-Expression of SARS-CoV-2"
+author: "Nunez Gonzalez, Laura"
+date: "2026-02-11"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    self_contained: true
+  pdf_document:
+    toc: true
+  word_document:
+    toc: true
+---
+<style>
+body {
+  text-align: justify;
+} 
+
+.hanging-indent {
+  padding-left: 2em;
+  text-indent: -2em;
+  margin-bottom: 1.5em; 
+}
+</style>
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.path = "plots/" 
+)
+```
+
+
+# Libraries
+
+```{r}
+# ==============================================================================
+# 1. DATA ACQUISITION AND GENOMIC ANNOTATION
+# ==============================================================================
+
+# Genome annotation from Homo sapiens
+library(org.Hs.eg.db) 
+library(EnsDb.Hsapiens.v86) 
+
+# Infrastructure for representing and manipulating data from GEO and genomic intervals
+library(SummarizedExperiment) 
+library(GenomicRanges) 
+
+# ==============================================================================
+# 2. RNA-seq DATA PREPROCESSING AND READ COUNT NORMALIZATION
+# ==============================================================================
+
+# General data manipulation
+library(tidyverse)
+library(here)
+library(dplyr)
+library (knitr)
+library(kableExtra)
+ 
+#TMM and log2 normalization
+library(edgeR)
+
+# ==============================================================================
+# 3. EXPLORATORY DATA ANALYSIS
+# ==============================================================================
+
+# Visualization 
+library(ggplot2)       # Basic visualization tool
+library(ggrepel)       # Modification of text over the graphs
+library(RColorBrewer)  # Color palettes
+library(gridExtra)     # Arrange grid in plots
+library(pheatmap)      # Creation of high-quality heat maps
+library(dendextend)    # Color palettes in dendograms
+library (patchwork)    # Combination of different graphics
+library(ComplexUpset)  # Creation of graphics for multiple intersections (UpSet plots)
+
+# ==============================================================================
+# 4. DIFFERENTIAL GENE EXPRESSION ANALYSIS: FUNCTIONAL ENRICHMENT & INTERPRETATION
+# ==============================================================================
+
+# Statistical frameworks for Differential Expression Genes (DEGs) analysis
+library(DESeq2) 
+library(EnhancedVolcano) # Creation of high-quality volcano plots of DEGs
+library(BiocParallel)
+library(clusterProfiler) #Functional enrichment analysis
+
+# Note: Detailed library information is documented in the session_info.txt.
+```
+# 1. Introduction
+This study, published in 2021 following the **SARS-CoV-2 pandemic (McClain et al., 2021)**, explores the activation of biological processes and molecular markers in **peripheral blood samples from infected patients**. These findings are further compared against other respiratory conditions, **including bacterial pneumonia, influenza virus infection, and healthy controls**.
+
+The analytical approach employed is **mRNA transcriptomics using an universal library preparation**. Sequencing was performed on the Illumina® NovaSeq 6000 platform. Stringent quality control filters were applied, including a minimum read length of 100 base pairs and a depth of at least 50 million reads per patient sample.
+
+Collectively, this research provides an exhaustive understanding of the biological—primarily immunological—response associated with each respiratory pathology, enabling a detailed comparative analysis of their shared and distinct molecular signatures. 
+
+# 2. Objectives
+1. Data Processing & Replication: Using the raw data deposited in GEO (GSE161731), this project performs a complete end-to-end processing workflow. The analysis is conducted starting from raw counts, replicating the original investigators' rigorous approach to ensure data integrity.
+2. Structured Transcriptomic Pipeline: The project follows a systematic and ordered pipeline for analyzing transcriptomic data. This workflow transitions from raw data preprocessing and normalization to a final functional analysis, identifying the dysregulated biological pathways and molecular signatures associated with each respiratory pathology.
+
+# 3. Methodology 
+The transcriptomic **workflow was implemented in R (v4.x) using the Bioconductor framework**. Information of packages and versions is available in Session_info.txt file. Raw sequencing counts and clinical metadata were retrieved from the NCBI **Gene Expression Omnibus (GEO) under accession number GSE161731** and integrated into a **SummarizedExperiment object for downstream analysis**. To ensure accurate feature attribution, **genomic coordinates** were mapped to the transcripts, followed by a rigorous data-wrangling process to filter out non-informative variables and standardize gene nomenclature.
+
+To account for **potential library composition biases across the 195 samples, we applied the Trimmed Mean of M-values (TMM) normalization method via the edgeR package**. This "trimming" step was essential to stabilize variance and allow for robust inter-sample comparisons. **Exploratory Data Analysis (EDA) was then performed using Principal Component Analysis (PCA) and unsupervised hierarchical clustering. For the latter, Ward’s Method (Ward.D2)** was utilized to minimize within-cluster variance, providing a high-sensitivity framework for the detection and subsequent removal of technical or **outliers**.
+
+Following quality control, **Differential Expression Analysis (DEA) was conducted using the DESeq2 package**, which employs empirical Bayes shrinkage to estimate dispersion and fold-change. Finally, to characterize the biological significance of the results, we performed Functional Enrichment Analysis. **Overrepresented Gene Ontology (GO)** terms were identified to elucidate the molecular pathways and immunological signatures associated with COVID-19 and bacterial pneumonia relative to healthy controls.
+
+# 4. Results
+
+## 4.1 Data acquisition
+
+Data acquisition is implemented from local archives (downloaded from GEO):
+```{r}
+data_path <- here("GSE161731")
+
+#Expression matrix
+counts <- read.csv(here("GSE161731", "GSE161731_counts.csv.gz"),
+                   row.names = 1, check.names = FALSE) #with row.name = 1 we associate all the row data to the gene (which is detailed in the first column)
+
+#Metadata
+metadata <- read.csv(here("GSE161731", "GSE161731_key.csv.gz"),
+                     header = TRUE, row.names = 1, check.names = FALSE) #same argument, but in this case we are associating sample id (patient) with the remaining data
+
+#Specific selection of the intersection about colnames from counts and rownames from metadata
+common_samples <- intersect(colnames(counts), rownames(metadata))
+counts_clean <- as.matrix(counts[, common_samples]) #sorted based on common_samples
+metadata_clean <- metadata[common_samples, ]
+```
+
+Addition of chromosomic location: 
+```{r}
+# Removal of different gene versions
+rownames(counts_clean) <- gsub("\\..*$", "", rownames(counts_clean))
+
+#Annotation calling
+edb <- EnsDb.Hsapiens.v86
+genes_coords <- genes(edb)
+
+common_genes <- intersect(rownames(counts_clean), names(genes_coords))
+
+counts_final <- counts_clean[common_genes, ]
+coords_final <- genes_coords[common_genes]
+metadata_final <- metadata_clean  
+```
+
+Now, we can create the object: **summarizedExperiment**
+```{r}
+se <- SummarizedExperiment(
+  assays = list(counts = counts_final),
+  colData = DataFrame(metadata_final),
+  rowRanges = coords_final
+)
+
+#We include metadata information (empty by defect)
+metadata(se) <- list(
+  GEO_accession = "GSE161731",
+  organism = "Homo sapiens",
+  assay_type = "RNA-seq"
+)
+
+#Definitive object: summarizedExperiment
+se
+```
+
+## 4.2 RNA-seq Data Preprocessing and Read Count Normalization
+
+### 4.2.1 Data preprocessing 
+```{r}
+# DUPLICATES EXTRACTION AND REMOVAL
+# We will maintain only the first entry of each duplicated sample
+metadata_raw <- as.data.frame(colData(se)) #We convert the colData in a normal dataframe for easy manipulation 
+metadata_unique <- metadata_raw[!duplicated(rownames(metadata_raw)), ]
+rownames(metadata_unique) <- rownames(metadata_raw)[!duplicated(rownames(metadata_raw))]
+
+# Selection of specific cohorts
+target_cohorts <- c("COVID-19", "Bacterial", "healthy")
+metadata_cohorts <- metadata_unique[metadata_unique$cohort %in% target_cohorts, ]
+
+# Standarization of special characters
+colnames(metadata_cohorts) <- gsub("[[:space:]\\-\\\\/]", "_", colnames(metadata_cohorts)) #Standarized colnames, withouth hyphens, spaces and slashes (replaced by underscore)
+
+#Now, we will clean the data inside the columns (in the character columns): 
+metadata_cohorts <- metadata_cohorts %>%
+  mutate(across(where(is.character), ~ gsub("\\s|\\-|/", "_", .x)))
+
+#We eliminate all the characters in age column
+metadata_cohorts$age <- as.numeric(gsub("[^0-9]", "", metadata_cohorts$age))
+
+#Get the summarizedExperiment with all these changes included
+keep_samples <- rownames(metadata_cohorts)
+se_clean <- se[, keep_samples]
+colData(se_clean) <- DataFrame(metadata_cohorts)
+
+cohort_counts <- table(colData(se_clean)$cohort)
+tabla_df <- as.data.frame(cohort_counts)
+colnames(tabla_df) <- c("Clinical Cohort", "Number of Samples")
+kable(tabla_df, caption = "Table 1: Sample distribution across clinical cohorts.")
+```
+Now, we have 3 clean cohort which contains 19 healthy individuals, 23 who suffered from bacterial pneumonia and 77 patients from COVID-19. 
+
+Once the data has been correctly preprocessed, we must **remove all the genes with low expression (probable biological noise)**. 
+
+```{r}
+# Removal of genes with <10 total counts 
+keep <- rowSums(assay(se_clean, "counts")) >= 10
+
+#Removal of these genes in which the 90% of the values correspond to zero
+keep <- keep & rowSums(assay(se_clean, "counts") == 0) <= 0.9 * ncol(se_clean)
+
+se_filtered <- se_clean[keep, ] #We maintain the aforementioned files (TRUE under keep variable and all the columns)
+print(paste("Genes after data cleaning processing:", sum(keep), "Final genes for the study:", nrow(se_filtered)))
+```
+At the beginning we had near 60K genes. Now, we will work only with near to 30K (**50% of the genes are noise to the study**). 
+
+### 4.2.2 TMM and log Normalization
+Following author's criteria, we will employ TMM (Trimmed Mean of M-values) normalization (Robinson & Oshlack, 2010) . With this methodology, the most central values will be averaging and the extreme values will be dropped out. Normalized counts were then transformed to log~2~CPM with pseudo-count (prior.count=1) with this criteria: 
+
+**TMM normalization**
+
+1. **For each sample vs. reference** (calculated by edgeR):
+   - Compute $log_2$(count$_{\text{sample}}$/count$_{\text{reference}}$) **per gene**
+   - **Trim** extreme values (75% outliers removed)  
+   - Average the central 25% → **TMM factor**
+
+2. **Normalize**: $counts_{\text{TMM}} = raw\_counts / TMM\_factor$
+
+3. **log2CPM**: $logCPM = log_2\left(\frac{counts_{\text{TMM}} \times 10^6}{library\_size} + 1\right)$
+
+This double-normalization corrects both **composition bias** (TMM) and **library size** (CPM), stabilizing variance for downstream PCA/clustering.
+
+TMM normalization: 
+   For each sample vs. reference sample (edgeR)
+   - TMM factor considerate the number of reads of each gene
+   - Calculate $log2(raw counts/TMM factor])$ for each single sample
+   - Remove extreme values: atypical data
+   - Average 25% of central values
+
+$normalized_counts = raw counts / TMM factor$
+
+$logCPM = log2( (normalized_counts * 1e6) / 1e6 + prior.count )$
+
+```{r}
+# 1. Extraction of raw data (counts) to create a new object: DEGList
+counts_matrix <- assay(se_filtered, "counts")
+dge <- DGEList(counts = counts_matrix)
+dge <- calcNormFactors(dge, method = "TMM") #TMM is already included in this package and ready to use
+
+# Logarithmic transformation
+logCPM <- cpm(dge, log = TRUE, prior.count = 1)
+
+# We save this information as new assay
+assay(se_filtered, "TMM_log2") <- logCPM
+```
+
+## 4.3 Exploratory data analysis (EDA)
+
+### 4.3.1 Visualization tools
+#### 4.3.1.1 PCA (Principal Component Analysis)
+```{r 1.PCA plot}
+# Data extraction from TMM_log2
+plot_data <- assay(se_filtered, "TMM_log2")
+pca_res <- prcomp(t(plot_data), scale. = TRUE)
+
+# Data frame for ggplot
+pca_df <- data.frame(
+  PC1 = pca_res$x[,1],
+  PC2 = pca_res$x[,2],
+  cohort = colData(se_filtered)$cohort,
+  batch = colData(se_filtered)$batch,
+  gender = colData(se_filtered)$gender,
+  sample = colnames(se_filtered)
+)
+
+# PCA
+ggplot(pca_df, aes(PC1, PC2, color = cohort)) +
+  geom_point(size = 3, alpha = 0.8) +
+  labs(title = "PCA - TMM_log2 normalized", 
+       x = paste0("PC1 (", round(summary(pca_res)$importance[2,1]*100,1), "%)"),
+       y = paste0("PC2 (", round(summary(pca_res)$importance[2,2]*100,1), "%)")) +
+  theme_minimal()
+```
+
+Visual analysis of the gene expression profiles reveals a **clear segregation of the bacterial infection samples**. In contrast, considerable **overlap is observed between the transcripts of COVID-19 patients and healthy controls**.
+
+#### 4.3.1.2 MDS (Multidimensional Scaling)
+```{r 2.MDS plot}
+# MDS 
+palette <- c("Bacterial" = "red", "COVID_19" = "green", "healthy" = "blue")
+cohort_factor <- factor(colData(se_filtered)$cohort)
+palette_mds <- palette[cohort_factor]
+
+plotMDS(dge, 
+        col = palette_mds,                    
+        labels = paste(colData(se_filtered)$cohort, 
+                      colData(se_filtered)$batch, sep="_"),
+        main = "MDS: RED=Bacterial, GREEN=COVID, BLUE=Healthy")
+```
+
+Both analyses (PCA and MDS) demonstrate a **consistent sample segregation**, confirming the robustness of the overall clustering pattern. 
+
+#### 4.3.1.3 Heatmap
+
+```{r 3.Heatmap, fig.width=12, fig.height=4}
+tmm_data <- assay(se_filtered, "TMM_log2")
+tmm_clean <- tmm_data; tmm_clean[is.infinite(tmm_data) | is.na(tmm_data)] <- 0
+
+# Top 1000 genes variables
+rv <- apply(tmm_clean, 1, var, na.rm = TRUE); rv[is.na(rv)] <- 0
+top_genes <- order(rv, decreasing = TRUE)[1:1000]
+
+annotation_col <- data.frame(Cohort = colData(se_filtered)$cohort)
+rownames(annotation_col) <- colnames(tmm_clean)
+annotation_colors <- list(Cohort = c("Bacterial" = "red", "COVID_19" = "green", "healthy" = "blue"))
+pheatmap(tmm_clean[top_genes, ], 
+         annotation_col = annotation_col,
+         annotation_colors = annotation_colors,
+         show_rownames = FALSE,
+         show_colnames = FALSE,
+         main = "RED=Bacterial, GREEN=COVID, BLUE=Healthy")
+```
+
+The hierarchical clustering dendrogram reveals **distinct separation of the Bacterial cohort** (red annotation bar), while **COVID-19 and healthy samples show partial overlap**. 
+This confirms previous visualization tools, such as PCA.
+
+### 4.3.2 Atypical data identification
+
+We select **Ward method to calculate minimum variance inside each cluster** (version D2).
+```{r 4.Outlier visualization}
+# Distance calculation
+dist_matrix <- dist(t(tmm_clean))
+hclust_res <- hclust(dist_matrix, method = "ward.D2")
+
+# Plot to visualize outliers
+plot(hclust_res, labels = FALSE, main = "Clustering - Possible Outliers")
+abline(h = 30, col = "red", lwd = 2)  # Cutoff
+rect.hclust(hclust_res, k = 5, border = "red")
+```
+
+With this method, 5 different clusters were created. Now, we must see the possible correspondence of these clusters with biological cohorts. 
+```{r}
+# We define the previous clusters
+clusters_5 <- cutree(hclust_res, k = 5)
+
+# We extract cohort data from summarizedExperiment
+comparison_df <- data.frame(
+  Sample = names(clusters_5),
+  Cluster = as.factor(clusters_5),
+  Cohort = colData(se_filtered)$cohort
+)
+
+# Table
+contingency_table <- table(Cluster = comparison_df$Cluster, Cohort = comparison_df$Cohort)
+```
+
+```{r 5.Cluster distribution by cohort}
+ggplot(comparison_df, aes(x = Cluster, fill = Cohort)) +
+  geom_bar(position = "fill") + # "fill" muestra proporciones (0 a 1)
+  theme_minimal() +
+  scale_fill_manual(values = c("Bacterial" = "#E41A1C", "COVID_19" = "#4DAF4A", "healthy" = "#377EB8")) +
+  labs(title = "Cluster distribution by cohort",
+       subtitle = "Purity evaluation of the 5 clusters",
+       x = "Cluster(n=5)",
+       y = "Sample proportion") +
+  theme(legend.position = "bottom")
+```
+
+This graph shows a clear overlap in COVID-19 and control patients in clusters from 1 to 3. However, bacterial pneumonia patients are clearly separated in clusters 4 and 5.
+
+```{r}
+
+# Identification of small clusters (n <= 2)
+counts_por_cluster <- table(clusters_5)
+clusters_outliers <- names(counts_por_cluster[counts_por_cluster <= 2])
+
+# Extraction of the samples within this criteria
+final_outliers <- names(clusters_5[clusters_5 %in% clusters_outliers])
+
+# Cleaning up
+se_clean <- se_filtered[, !(colnames(se_filtered) %in% final_outliers)]
+
+# Verification
+message("Original samples: ", ncol(se_filtered))
+message("Removed samples: ", length(final_outliers))
+message("Final samples: ", ncol(se_clean))
+```
+After this short verification, we will continue the identification of atypical data. Based on Spearman correlation matrix for each individual. The patients with -2SD or +2SD with respect to the mean will be considered as outlier: 
+```{r}
+sample_cor <- cor(tmm_clean, method = "spearman")
+mean_cor <- colMeans(sample_cor)
+
+# Threshold 
+threshold_cor <- mean(mean_cor) - 2 * sd(mean_cor)
+outliers_num <- names(mean_cor[mean_cor < threshold_cor])
+
+cat("Outliers identified:", length(outliers_num), "These samples will be removed for subsequent posterior analysis.")
+
+#Outliers removal
+se_clean <- se_filtered[, !(colnames(se_filtered) %in% outliers_num)]
+message(paste("Analysis contains", ncol(se_clean), "samples."))
+```
+
+### 4.3.3 Confounding variables
+
+We will visualize PCA by different confounding variables
+```{r}
+# Variables to consider
+pca_df$batch        <- colData(se_filtered)$batch
+pca_df$age <- as.numeric(colData(se_filtered)$age)
+pca_df$race <- colData(se_filtered)$race
+pca_df$gender <- colData(se_filtered)$gender
+pca_df$hospitalized <- colData(se_filtered)$hospitalized
+pca_df$onset        <- colData(se_filtered)$time_since_onset 
+
+# All the variables employed must be factors
+# Healthy controls must be the reference cohort
+se_filtered$cohort <- factor(se_filtered$cohort)
+se_filtered$cohort <- relevel(se_filtered$cohort, ref = "healthy")
+
+se_filtered$batch  <- factor(se_filtered$batch)
+se_filtered$race   <- factor(se_filtered$race)
+se_filtered$age <- scale(as.numeric(as.character(se_filtered$age))) 
+
+#We have 42 patients with no data for variables: hospitalized and onset. Probably, they are healthy controls
+contingency_table_hosp <- table(pca_df$cohort, is.na(pca_df$hospitalized))
+table_mat <- as.matrix(contingency_table_hosp) #Matrix conversion to manage the internal names
+colnames(table_mat) <- c("Complete Data", "Missing Data (NA)")
+kable(table_mat, #table generation
+      caption = "Table 2: Analysis of missing clinical data (Hospitalized/Onset) across cohorts.",
+      booktabs = TRUE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), 
+                full_width = FALSE, 
+                position = "center")
+```
+All patients were hospitalized, whereas none of the healthy controls were. Consequently, **hospitalization status is a nested variable and should not be included as a confounding factor** in the analysis of the full cohort.
+
+```{r 6.PCAs by confounding variables, fig.width=10, fig.height=10}
+
+#PCA by batch
+p_batch <- ggplot(pca_df, aes(PC1, PC2, color = batch)) +
+  geom_point(size = 3, alpha = 0.7) +
+  labs(title = "PCA by Batch", x = "PC1", y = "PC2") +
+  theme_minimal()
+
+# PCA by race
+p_race <- ggplot(pca_df, aes(PC1, PC2, color = race)) +
+  geom_point(size = 3, alpha = 0.7) +
+  labs(title = "PCA by Race", x = "PC1", y = "PC2") +
+  theme_minimal()
+
+# PCA by sex
+p_sex <- ggplot(pca_df, aes(PC1, PC2, color = gender)) +
+  geom_point(size = 3, alpha = 0.7) +
+  labs(title = "PCA by sex", x = "PC1", y = "PC2") +
+  theme_minimal()
+
+# PCA by age (continuous variable)
+p_age <- ggplot(pca_df, aes(PC1, PC2, color = age)) +
+  geom_point(size = 3, alpha = 0.7) +
+  scale_color_viridis_c() +
+  labs(title = "PCA by Age", x = "PC1", y = "PC2") +
+  theme_minimal()
+
+# Plots
+pca_final_grid <- (p_batch | p_race) / 
+                  (p_age | p_sex) +
+  plot_annotation(
+    title = 'Exploratory Data Analysis: PCA Multivariable assessment',
+    subtitle = 'Analysis of potential biological and technical confounding factors',
+    caption = 'Dataset: RNA-Seq COVID-19 Study | 195 Samples'
+  ) & 
+  theme(plot.title = element_text(size = 18, face = "bold"))
+pca_final_grid
+```
+
+Furthermore, visual inspection reveals that Batch 2 is predominantly localized to the right side of the plot, while Batch 1 exhibits a broader distribution. **Including batch as a covariate in the model is highly recommended**, as it is a standard approach to mitigate potential technical artifacts arising from the sequencing workflow Hicks et al. (2018). 
+
+Regarding **race**, White and African American individuals constitute the vast majority of the cohort. There appears to be a **clear distinction between these two racial groups**.
+
+There is **no clear separation between males and females**; thus, biological sex was not considered a confounding variable. In contrast, noticeable differences are observed regarding the age of the study subjects. Consequently, **age was included as a covariate in the model**.
+
+## 4.4 Differential Gene Expression (DGE) Analysis: Functional Enrichment and Interpretation
+
+We will implement a **generalized linear model (GLM)** incorporating race, age, and batch as confounding covariates to isolate their effects from the cohort variable. Our selected method is **DESeq2**.
+
+The primary objective of creating the DESeqDataSet object is to **evaluate differential gene expression across cohorts while ensuring the mitigation of technical and biological noise** caused by these confounding variables.
+
+```{r dsa, cache = TRUE, cache.path = "c/"}
+register(SnowParam(workers = 6))
+# Matrix construction
+dds <- DESeqDataSet(se_filtered, design = ~ batch + race + age + cohort)
+
+# Execution of the analysis (dispersion estimation and model fitting
+# Shrinkage is included in this step
+dds <- DESeq(dds, parallel= T)
+```
+
+Next, we specify the contrast vectors to compare COVID-19 vs. healthy and Bacterial pneumonia vs. healthy, allowing us to extract the differential expression results for each condition.
+```{r}
+# Contrast: COVID-19 vs Healthy
+res_covid <- results(dds, 
+                     contrast = c("cohort", "COVID_19", "healthy"),
+                     alpha = 0.05) # Umbral de significación
+
+# Contrast: Bacterial vs Healthy
+res_bacterial <- results(dds, 
+                         contrast = c("cohort", "Bacterial", "healthy"),
+                         alpha = 0.05)
+
+# Summaries
+message("DEGs: COVID-19 vs Healthy")
+message("DEGs: Bacterial vs Healthy")
+```
+
+Differential gene expression analysis using the **negative binomial distribution (DESeq2) with Benjamini-Hochberg correction by FDR** revealed significant transcriptomic alterations in both infection cohorts compared to the healthy control group.
+
+The **bacterial cohort exhibited a more extensive transcriptional response, with approximately 26% of genes showing differential expression ($padj < 0.05$)**, compared to **6.8% in the COVID-19 group**. Notably, the COVID-19 analysis required a more stringent independent filtering, with 47% of genes excluded due to low mean counts. 
+
+**Outlier detection remained consistent across both comparisons, accounting for approximately 2%** of the total features. These results highlight a distinct molecular signature for each pathogen, with bacterial pneumonia triggering a broader systemic gene dysregulation than COVID-19 in this dataset.
+
+### 4.4.1 Visualization of DEG
+
+```{r 7.MAplot}
+plotMA_covid19 <- plotMA(res_covid, ylim=c(-5, 5), 
+       main="Differential Expression distribution: COVID-19 vs. healthy")
+# Reference in log2FoldChange = 1
+abline(h=c(-1, 1), col="green4", lty=5) 
+
+plotMA_bact<- plotMA(res_bacterial, ylim=c(-5, 5), 
+       main="Differential Expression distribution: bacterial pneumonia vs. healthy")
+# Reference in log2FoldChange = 1
+abline(h=c(-1, 1), col= "red2", lty=5) 
+```
+
+The **comparative differential expression analysis reveals distinct transcriptional landscapes between bacterial and viral etiologies**. While bacterial pneumonia induces a massive and symmetric inflammatory response characterized by a high number of significantly dysregulated genes, the COVID-19 signature appears more targeted. Notably, the COVID-19 profile exhibits a prominent cluster of down-regulated genes among high-abundance transcripts, suggesting a specific suppressive effect on host cellular processes.
+
+```{r 8.Volcano plot, fig.width=12, fig.height=8}
+# Volcano plot for COVID-19 vs Healthy
+volcano_covid19 <- EnhancedVolcano(res_covid,
+                lab = rownames(res_covid),
+                x = 'log2FoldChange',
+                y = 'padj',
+                title = 'COVID-19 vs Healthy',
+                pCutoff = 0.05,
+                FCcutoff = 1.5,
+                pointSize = 2.0,
+                labSize = 4.0,
+                col=c('grey', 'grey', 'yellow2', 'blue'),
+                legendLabels=c('NS', 'Log2 FC', 'Adjusted p-value', 'Both'),
+                caption = 'FC cutoff: 1.5; p-value cutoff: 0.05')
+
+# Volcano plot for Bacterial vs Healthy
+volcano_bacterial <- EnhancedVolcano(res_bacterial,
+                lab = rownames(res_bacterial),
+                x = 'log2FoldChange',
+                y = 'padj',
+                title = 'Bacterial Pneumonia vs Healthy',
+                pCutoff = 0.05,
+                FCcutoff = 1.5,
+                pointSize = 2.0,
+                labSize = 4.0,
+                col=c('grey', 'grey', 'yellow2', 'blue'),
+                legendLabels=c('NS', 'Log2 FC', 'Adjusted p-value', 'Both'),
+                caption = 'FC cutoff: 1.5; p-value cutoff: 0.05')
+volcano_covid19 | volcano_bacterial
+```
+
+To gain a overview of coincidences between the two cohorts we generate an upset plot. We use a threshold of foldchange 1.5 and alpha = 0.05 to represente Differential Expressed Genes. 
+
+```{r 9.Upset plot}
+# Threshold definition
+lfc_threshold <- log2(1.5)
+
+# Gene list
+list_input <- list(
+  `COVID UP`   = rownames(res_covid[which(res_covid$padj < 0.05 & res_covid$log2FoldChange > lfc_threshold), ]),
+  `COVID DOWN` = rownames(res_covid[which(res_covid$padj < 0.05 & res_covid$log2FoldChange < -lfc_threshold), ]),
+  `Bact UP`    = rownames(res_bacterial[which(res_bacterial$padj < 0.05 & res_bacterial$log2FoldChange > lfc_threshold), ]),
+  `Bact DOWN`  = rownames(res_bacterial[which(res_bacterial$padj < 0.05 & res_bacterial$log2FoldChange < -lfc_threshold), ])
+)
+
+# Binary vector 
+all_genes <- unique(unlist(list_input))
+upset_df <- data.frame(gene = all_genes)
+for(set_name in names(list_input)) {
+  upset_df[[set_name]] <- as.integer(upset_df$gene %in% list_input[[set_name]])
+}
+
+# colNames define the genes
+sets_indices <- names(list_input)
+
+#Upset plot
+upset(
+  upset_df,
+  sets_indices, # Vector with colNames
+  name = "Groups",
+  width_ratio = 0.1,
+  queries = list(
+    upset_query(set = "COVID UP", fill = "#E41A1C"),
+    upset_query(set = "Bact UP", fill = "#A60606"),
+    upset_query(set = "COVID DOWN", fill = "#377EB8"),
+    upset_query(set = "Bact DOWN", fill = "#0D4673")
+  ),
+  base_annotations = list(
+    'Intersection size' = intersection_size(counts = TRUE)
+  ),
+  set_sizes = upset_set_size() + theme(axis.text.x = element_text(angle = 90))
+) + labs(
+    title = "Stratified Expression Overlap (FC > 1.5)",
+    subtitle = "Comparing Directional Response: COVID-19 vs Bacterial Pneumonia"
+)
+```
+
+The **intersection analysis confirms a more extensive transcriptional landscape in Bacterial pneumonia compared to COVID-19** (both in up-regulated and down-regulated genes) relative to healthy controls. Furthermore, the intersections reveal that **overlaps between both datasets occur primarily in a concordant manner**: genes up-regulated in COVID-19 tend to be up-regulated in the bacterial cohort, with a similar pattern observed for down-regulated genes.
+
+These results identify a common molecular response to respiratory infections, highlighting **potential biomarkers for general lung inflammation and host defense mechanism**.
+
+## 4.5 Functional enrichment analysis
+
+We select the upregulated genes from COVID-19 and pneumonia patients (over healthy controls) to study the main mechanisms and physiological pathways activated under these conditions. 
+
+```{r 10.Functional enrichment by biological process, fig.width=12, fig.height=8}
+covid_up <- list_input[["COVID UP"]]
+bact_up  <- list_input[["Bact UP"]]
+
+covid_up_clean <- as.character(covid_up)
+bact_up_clean  <- as.character(bact_up)
+
+enr_covid <- enrichGO(gene          = covid_up_clean,
+                      OrgDb         = org.Hs.eg.db,
+                      keyType       = 'ENSEMBL', 
+                      ont           = "BP",     
+                      pAdjustMethod = "BH",
+                      pvalueCutoff  = 0.05, 
+                      qvalueCutoff  = 0.2)  
+
+enr_bact <- enrichGO(gene          = bact_up_clean,
+                     OrgDb         = org.Hs.eg.db,
+                     keyType       = 'ENSEMBL',
+                     ont           = "BP",
+                     pAdjustMethod = "BH",
+                     pvalueCutoff  = 0.05,
+                     qvalueCutoff  = 0.2)
+
+#Visualization of the most enriched biological process in dotplot
+enr_covid <- setReadable(enr_covid, OrgDb = org.Hs.eg.db, keyType="ENSEMBL") #Transformation of gene nomenclature
+enr_bact  <- setReadable(enr_bact, OrgDb = org.Hs.eg.db, keyType="ENSEMBL")
+
+# Plots
+dot_covid <- dotplot(enr_covid, showCategory=15) + 
+  ggtitle("Enriched Biological Processes: COVID-19") +
+  theme_minimal()
+
+dot_bact <- dotplot(enr_bact, showCategory=15) + 
+  ggtitle("Enriched Biological Processes: Bacterial") +
+  theme_minimal()
+
+dot_covid | dot_bact
+```
+
+**Functional enrichment analysis reveals deep contrast between the two infectious etiologies despite their shared clinical presentation**. In COVID-19, the host response is predominantly characterized by immediate immune activation, specifically through immunoglobulin-mediated responses and B-cell-mediated cellular immunity. To a lesser extent, pathways related to cell division are also enriched, potentially reflecting lymphocyte proliferation.
+
+In contrast, the bacterial infection signature is directly linked to **cellular structural and degradative processes, specifically autophagy, vesicle-mediated transport, and endocytosis**. These pathways likely represent the host's attempt to internalize and degrade bacteria.
+
+# 5. Discussion
+The role of **Bioconductor in gene expression analysis** is invaluable for modern biomedical research. Currently, scientific standards require researchers to **deposit high-throughput sequencing data in public repositories such as the GEO (Gene Expression Omnibus)** Database. These datasets are typically available in both raw and processed formats, providing a transparent foundation for the scientific community.
+
+For any bioinformatician the ability to interpret and re-analyze these studies is an essential skill. Public data serves as a powerful tool for comparative and complementary analysis, allowing for the validation of in-house findings against established benchmarks. Furthermore, leveraging the current state-of-the-art through existing experiments significantly optimizes research resources, reducing the need for redundant laboratory testing and accelerating the discovery of disease-specific molecular signatures.
+
+In this study, among the top 15 enriched biological processes in COVID-19 and bacterial pneumonia, there is **minimal overlap between the two conditions**. This suggests that the molecular mechanisms driving the host's defense are highly pathogen-specific, offering a clear transcriptomic basis for differential diagnosis.
+
+# 6. Reproducibility statement
+All raw transcriptomic data and corresponding clinical metadata analyzed in this study are publicly available through the **NCBI Gene Expression Omnibus (GEO) under the accession number GSE161731**. This ensures that the foundational evidence for our findings remains accessible for independent verification.
+
+The complete analytical pipeline, including the **R Markdown (.Rmd) source code, pre-processing scripts, and high-resolution figures, is hosted on GitHub (https://github.com/lnungon/RNASeq-Differential-Expression-SARS-CoV-2)**. The repository is structured to allow for full computational replication of the results, from raw count processing to functional enrichment.
+
+To ensure computational reproducibility, detailed information regarding the R environment, including package versions and system dependencies, is documented in the accompanying session_info.txt file.
+```{r}
+print(sessionInfo(), locale = FALSE)
+```
+
+
+# 7. Bibliography
+::: {.hanging-indent}
+Hicks, S. C., Townes, F. W., Teng, M., & Irizarry, R. A. (2018). Missing data and technical variability in single-cell RNA-sequencing experiments. Biostatistics, 19(4), 562–578. https://doi.org/10.1093/biostatistics/kxx053 
+:::
+
+::: {.hanging-indent}
+McClain, M. T., Constantine, F. J., Henao, R., Liu, Y., Tsalik, E. L., Burke, T. W., Steinbrink, J. M., Petzold, E., Nicholson, B. P., Rolfe, R., Kraft, B. D., Kelly, M. S., Saban, D. R., Yu, C., Shen, X., Ko, E. M., Sempowski, G. D., Denny, T. N., Ginsburg, G. S., … Woods, C. W. (2021). Dysregulated transcriptional responses to SARS-CoV-2 in the periphery. Nature Communications, 12(1), 1079. https://doi.org/10.1038/s41467-021-21289-y
+:::
+
+::: {.hanging-indent}
+McClain, M. T., Constantine, F. J., Henao, R., Liu, Y., Tsalik, E. L., Burke, T. W., Steinbrink, J. M., Petzold, E., Nicholson, B. P., Rolfe, R., Kraft, B. D., Kelly, M. S., Saban, D. R., Yu, C., Shen, X., Ko, E. M., Sempowski, G. D., Denny, T. N., Ginsburg, G. S., … Woods, C. W. (2021). Dysregulated transcriptional responses to SARS-CoV-2 in the periphery. Nature Communications, 12(1), 1079. https://doi.org/10.1038/s41467-021-21289-y
+:::
+
