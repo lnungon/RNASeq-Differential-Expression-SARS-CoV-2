@@ -27,7 +27,7 @@ We performed unsupervised clustering using TMM-normalized log2 counts. To ensure
 2. **Functional Enrichment Analysis (Gene Ontology)**
 To interpret the biological relevance of the Differentially Expressed Genes (DEGs), we performed over-Representation Analysis using clusterProfiler against the Gene Ontology (GO) database.
 
-! [Functional enrichment based on biological processes (GO terms) in COVID-19 and pneumonia bacterial patients over healthy controls](plots/plots/Functionalenrichment_BP.png)
+! [Functional enrichment based on biological processes (GO terms) in COVID-19 and pneumonia bacterial patients over healthy controls]plots/plots/Functionalenrichment_BP.png)
 
 >This dotplot illustrates the top enriched GO terms (classified by Biological Process) for upregulated genes in COVID-19 and bacterial pneumonia. Key activated pathways include "type I interferon signaling pathway" and "response to virus", which are hallmark innate immune responses to viral infection. The Gene Ratio and Adjusted P-value ($P_{adj}$) demonstrate significant over-representation, providing a biological mechanistic link to the clinical phenotype. In contrast, the bacterial infection signature is directly linked to cellular structural and degradative processes, specifically autophagy, vesicle-mediated transport, and endocytosis. These pathways likely represent the host’s attempt to internalize and degrade bacteria. 
 
