@@ -16,6 +16,7 @@ The main goal of this analysis is to process transcriptomic data to understand t
 
 ## Analysis overview
 The following visualizations demonstrate the robust biological signal captured from the 195 blood samples in the GSE161731 dataset.
+
 1. **Sample Clustering via Principal Component Analysis (PCA)**
 We performed unsupervised clustering using TMM-normalized log2 counts. To ensure that genes with different expression levels contributed equally to the variation, the data was centered and scaled ($scale. = TRUE$) before computing the principal components.
 
