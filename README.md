@@ -8,7 +8,7 @@ The main goal of this analysis is to process transcriptomic data to understand t
 * **Data Preprocessing:** quality control, filtering of low-count genes and normalization.
 * **Exploratory Data Analysis:** Visualizing sample clustering through PCA and heatmaps to possibly discover atypical points and ensure data consistency.
 * **Differential Expression:** Statistical modeling to identify significant DEGs.
-* **Functional Enrichment:** Pathway analysis using Gene Ontology (GO) and KEGG to provide biological context to the findings.
+* **Functional Enrichment:** Pathway analysis using Gene Ontology (GO) to provide biological context to the findings.
 
 ## Software & Libraries
 * **Language:** R
