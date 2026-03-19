@@ -50,6 +50,11 @@ Reproducibility Note: A comprehensive list of all loaded packages, versions, and
 * `plots/`: Directory containing key visualizations (Volcano Plots, PCA, Heatmaps).
 * `executive_summary.pdf` : a structured summary of all the procedures, results and conclusions.
 * `sessio_info.txt`: complete information about the used environment
+* [Main Analysis Script (R)](analysis_script.Rmd): Clean and commented code. 
+* [Full Research Report (HTML)](analysis_script.html): Interactive report with all visualizations and statistical tables.
+* [Executive Summary (PDF)](executive_summary.pdf): High-level summary of findings for clinical stakeholders with minimal code requirements.
+* [Plots](plots): Folder with all the individual images and figures inside the project.
+* [Session Info (txt))](session_info.txt): Complete information about the used environment. 
 
 ---
 *Developed as part of my technical portfolio in Biostatistics and Genomic Data Science.*
